@@ -165,13 +165,45 @@
     .panel{padding:20px;}
     .results{grid-template-columns:repeat(auto-fill,minmax(140px,1fr));}
   }
+
+  /* Admin authentication */
+  .auth-overlay{position:fixed;inset:0;background:var(--ink);display:flex;align-items:center;justify-content:center;padding:20px;z-index:9999;}
+  .auth-card{width:min(420px,100%);background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:28px;}
+  .auth-card h2{font-size:22px;margin-bottom:8px;}
+  .auth-card p{font-size:13px;color:var(--stone);margin-bottom:20px;}
+  .auth-card input{width:100%;background:var(--ink);border:1px solid var(--border);border-radius:4px;padding:14px;color:var(--washi);font-size:14px;margin-bottom:12px;}
+  .auth-card input:focus{outline:none;border-color:var(--teal);}
+  .auth-error{min-height:20px;color:var(--hanko);font-size:12px;margin:4px 0 12px;}
+  .auth-submit{width:100%;}
+  .auth-submit:disabled{opacity:.5;cursor:not-allowed;}
+  .admin-bar{display:flex;align-items:center;gap:10px;}
+  .logout-btn{background:none;border:1px solid var(--border);color:var(--stone);padding:7px 12px;border-radius:4px;font-size:12px;cursor:pointer;}
+  .logout-btn:hover{border-color:var(--washi);color:var(--washi);}
+
 </style>
 </head>
 <body>
 
+<div class="auth-overlay" id="authOverlay">
+  <div class="auth-card">
+    <div class="logo" style="margin-bottom:18px;">祝<span class="dot">・</span>RONIN <span style="color:var(--stone);font-size:14px;font-family:'Zen Kaku Gothic New',sans-serif;">/ admin</span></div>
+    <h2>Admin Login</h2>
+    <p>Sign in with the Firebase admin account to manage the library.</p>
+    <form id="loginForm">
+      <input id="loginEmail" type="email" placeholder="Admin email" autocomplete="username" required>
+      <input id="loginPassword" type="password" placeholder="Password" autocomplete="current-password" required>
+      <div class="auth-error" id="loginError"></div>
+      <button class="btn btn-primary auth-submit" id="loginBtn" type="submit">Sign in</button>
+    </form>
+  </div>
+</div>
+
 <header>
   <div class="logo">祝<span class="dot">・</span>RONIN <span style="color:var(--stone);font-size:14px;font-family:'Zen Kaku Gothic New',sans-serif;">/ admin</span></div>
-  <a class="back" href="anime-stream-homepage.html">← Back to site</a>
+  <div class="admin-bar">
+    <button class="logout-btn" id="logoutBtn" type="button">Logout</button>
+    <a class="back" href="anime-stream-homepage.html">← Back to site</a>
+  </div>
 </header>
 
 <div class="shell">
@@ -242,6 +274,62 @@
 
 <script>
   const FIREBASE_URL = "https://toonflix-anime-f83a8-default-rtdb.firebaseio.com";
+  const FIREBASE_API_KEY = "AIzaSyCl5usAaHJAcojnBw0oe2GOIk6qg8AdMt0";
+  const AUTH_SIGNIN_URL = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`;
+  const AUTH_REFRESH_URL = `https://securetoken.googleapis.com/v1/token?key=${FIREBASE_API_KEY}`;
+  let ID_TOKEN = sessionStorage.getItem('ronin_admin_id_token') || '';
+  let REFRESH_TOKEN = sessionStorage.getItem('ronin_admin_refresh_token') || '';
+
+  function saveAuth(data){
+    ID_TOKEN = data.idToken || '';
+    REFRESH_TOKEN = data.refreshToken || '';
+    sessionStorage.setItem('ronin_admin_id_token', ID_TOKEN);
+    sessionStorage.setItem('ronin_admin_refresh_token', REFRESH_TOKEN);
+  }
+  function clearAuth(){
+    ID_TOKEN = ''; REFRESH_TOKEN = '';
+    sessionStorage.removeItem('ronin_admin_id_token');
+    sessionStorage.removeItem('ronin_admin_refresh_token');
+  }
+  function authQuery(){ return ID_TOKEN ? `?auth=${encodeURIComponent(ID_TOKEN)}` : ''; }
+  function showLogin(message=''){
+    document.getElementById('authOverlay').style.display='flex';
+    document.querySelector('.shell').style.display='none';
+    document.getElementById('loginError').textContent=message;
+  }
+  function showAdmin(){
+    document.getElementById('authOverlay').style.display='none';
+    document.querySelector('.shell').style.display='block';
+  }
+  async function refreshIdToken(){
+    if(!REFRESH_TOKEN) return false;
+    try{
+      const res = await fetch(AUTH_REFRESH_URL,{
+        method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:`grant_type=refresh_token&refresh_token=${encodeURIComponent(REFRESH_TOKEN)}`
+      });
+      if(!res.ok) return false;
+      const data=await res.json();
+      ID_TOKEN=data.id_token;
+      REFRESH_TOKEN=data.refresh_token || REFRESH_TOKEN;
+      sessionStorage.setItem('ronin_admin_id_token',ID_TOKEN);
+      sessionStorage.setItem('ronin_admin_refresh_token',REFRESH_TOKEN);
+      return true;
+    }catch(e){ return false; }
+  }
+  async function authenticatedFetch(url, options={}){
+    const opts={...options,headers:{...(options.headers||{})}};
+    const separator=url.includes('?')?'&':'?';
+    opts.headers['Content-Type']=opts.headers['Content-Type'] || 'application/json';
+    let res=await fetch(`${url}${separator}auth=${encodeURIComponent(ID_TOKEN)}`,opts);
+    if((res.status===401 || res.status===403) && await refreshIdToken()){
+      res=await fetch(`${url}${separator}auth=${encodeURIComponent(ID_TOKEN)}`,opts);
+    }
+    if(res.status===401 || res.status===403){
+      clearAuth(); showLogin('Session expired or access denied. Please sign in again.');
+    }
+    return res;
+  }
   const ANILIST_URL = "https://graphql.anilist.co";
 
   const searchInput = document.getElementById('searchInput');
@@ -341,15 +429,67 @@
       addedAt: Date.now(),
     };
     try{
-      const res = await fetch(`${FIREBASE_URL}/anime.json`, {
+      const res = await authenticatedFetch(`${FIREBASE_URL}/anime.json`, {
         method: 'POST',
-        headers: {'Content-Type':'application/json'},
         body: JSON.stringify(payload),
       });
       if(!res.ok) throw new Error('Write failed');
       btn.textContent = 'Added ✓';
       btn.classList.add('added');
+      const authOverlay = document.getElementById('authOverlay');
+  const loginForm = document.getElementById('loginForm');
+  const loginBtn = document.getElementById('loginBtn');
+  const loginError = document.getElementById('loginError');
+  const logoutBtn = document.getElementById('logoutBtn');
+
+  loginForm.addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    loginBtn.disabled=true; loginBtn.textContent='Signing in…'; loginError.textContent='';
+    try{
+      const email=document.getElementById('loginEmail').value.trim();
+      const password=document.getElementById('loginPassword').value;
+      const res=await fetch(AUTH_SIGNIN_URL,{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({email,password,returnSecureToken:true})
+      });
+      const data=await res.json();
+      if(!res.ok) throw new Error(data.error?.message || 'Login failed');
+      saveAuth(data);
+      showAdmin();
       loadLibrary();
+    }catch(err){
+      const map={INVALID_LOGIN_CREDENTIALS:'Wrong email or password.',INVALID_PASSWORD:'Wrong email or password.',EMAIL_NOT_FOUND:'Wrong email or password.',USER_DISABLED:'This account is disabled.',TOO_MANY_ATTEMPTS_TRY_LATER:'Too many attempts. Try again later.'};
+      loginError.textContent=map[err.message] || 'Login failed. Check Firebase Authentication settings.';
+    }finally{
+      loginBtn.disabled=false; loginBtn.textContent='Sign in';
+    }
+  });
+
+  logoutBtn.addEventListener('click',()=>{ clearAuth(); showLogin(''); document.getElementById('loginPassword').value=''; });
+
+  async function bootAdmin(){
+    if(!ID_TOKEN){ showLogin(''); return; }
+    try{
+      const res=await authenticatedFetch(`${FIREBASE_URL}/anime.json`);
+      if(!res.ok) throw new Error('Access denied');
+      showAdmin();
+      const data=await res.json();
+      if(!data){
+        libraryBody.innerHTML = `<tr class="empty-row"><td colspan="7">No titles added yet — search above.</td></tr>`;
+      }else{
+        const entries = Object.entries(data).sort((a,b) => (b[1].addedAt||0) - (a[1].addedAt||0));
+        libraryBody.innerHTML = entries.map(([id, v]) => `
+          <tr><td>${v.poster ? `<img class="thumb" src="${v.poster}" alt="">` : ''}</td>
+          <td>${v.title || 'Untitled'}${v.format === 'MOVIE' ? ' <span class="pill">Movie</span>' : ''}</td>
+          <td><span class="pill">${v.genre || '—'}</span></td><td>${v.year || '—'}</td>
+          <td>${v.rating != null ? Number(v.rating).toFixed(1) : '—'}</td><td>${v.episodes || '—'}</td>
+          <td><button class="del-btn" data-id="${id}">Remove</button></td></tr>`).join('');
+        libraryBody.querySelectorAll('.del-btn').forEach(btn => btn.addEventListener('click',()=>deleteAnime(btn.dataset.id)));
+      }
+    }catch(err){ clearAuth(); showLogin('Please sign in to access the admin panel.'); }
+  }
+
+  bootAdmin();
     }catch(err){
       console.error(err);
       btn.disabled = false;
@@ -445,9 +585,8 @@
       poster: (m.coverImage && m.coverImage.large) || '',
       addedAt: Date.now(),
     };
-    const res = await fetch(`${FIREBASE_URL}/anime.json`, {
+    const res = await authenticatedFetch(`${FIREBASE_URL}/anime.json`, {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
       body: JSON.stringify(payload),
     });
     if(!res.ok) throw new Error('Write failed');
@@ -494,7 +633,7 @@
   async function loadLibrary(){
     libraryBody.innerHTML = `<tr class="empty-row"><td colspan="7">Loading…</td></tr>`;
     try{
-      const res = await fetch(`${FIREBASE_URL}/anime.json`);
+      const res = await authenticatedFetch(`${FIREBASE_URL}/anime.json`);
       const data = await res.json();
       if(!data){
         libraryBody.innerHTML = `<tr class="empty-row"><td colspan="7">No titles added yet — search above.</td></tr>`;
@@ -524,7 +663,8 @@
   async function deleteAnime(id){
     if(!confirm('Remove this title from the library?')) return;
     try{
-      await fetch(`${FIREBASE_URL}/anime/${id}.json`, { method: 'DELETE' });
+      const res = await authenticatedFetch(`${FIREBASE_URL}/anime/${id}.json`, { method: 'DELETE' });
+      if(!res.ok) throw new Error('Delete failed');
       loadLibrary();
     }catch(err){
       console.error(err);
